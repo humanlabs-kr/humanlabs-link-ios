@@ -1,0 +1,205 @@
+//
+//  EventTracker.swift
+//  HumanlabsLinkSDK
+//
+//  Copyright (c) 2025 HumanlabsLink
+//  Licensed under the MIT License
+//
+
+import Foundation
+
+/// Tracks custom events and manages event queueing
+@available(iOS 13.0, macOS 10.15, *)
+final class EventTracker {
+    // MARK: - Properties
+
+    private let networkManager: NetworkManagerProtocol
+    private let storageManager: StorageManagerProtocol
+    private let attributionContext: AttributionContext
+    private let eventQueue: EventQueue
+
+    /// Background queue for event processing
+    private let processingQueue = DispatchQueue(label: "world.humanlabs.link.sdk.events", qos: .utility)
+
+    /// Guards `lastScreenName` for the `previousScreen` transition stamp.
+    private let screenLock = NSLock()
+    private var lastScreenName: String?
+
+    // MARK: - Initialization
+
+    /// Creates an event tracker
+    /// - Parameters:
+    ///   - networkManager: Network manager for API requests
+    ///   - storageManager: Storage manager for install ID
+    ///   - attributionContext: Last-click attribution context stamped onto each event
+    ///   - eventQueue: Event queue for offline support
+    init(
+        networkManager: NetworkManagerProtocol,
+        storageManager: StorageManagerProtocol,
+        attributionContext: AttributionContext,
+        eventQueue: EventQueue = EventQueue()
+    ) {
+        self.networkManager = networkManager
+        self.storageManager = storageManager
+        self.attributionContext = attributionContext
+        self.eventQueue = eventQueue
+    }
+
+    // MARK: - Event Tracking
+
+    /// Tracks a custom event
+    /// - Parameters:
+    ///   - name: Event name (e.g., "purchase", "signup")
+    ///   - properties: Optional event properties (must be JSON-serializable)
+    /// - Throws: HumanlabsLinkError if tracking fails
+    func trackEvent(name: String, properties: [String: Any]? = nil) async throws {
+        // Validate event name
+        guard !name.isEmpty else {
+            throw HumanlabsLinkError.invalidEventData("Event name cannot be empty")
+        }
+
+        // Get install ID
+        guard let installId = storageManager.getInstallId() else {
+            throw HumanlabsLinkError.notInitialized
+        }
+
+        // Stamp the event with the active last-click attribution context so the
+        // backend can credit the deep link that drove it (organic events carry
+        // only the session id).
+        let stamp = attributionContext.getStamp()
+        let event = EventRequest(
+            installId: installId,
+            eventName: name,
+            eventData: properties ?? [:],
+            timestamp: Date(),
+            attributedLinkId: stamp.attributedLinkId,
+            attributedClickId: stamp.attributedClickId,
+            linkOpenedAt: stamp.linkOpenedAt,
+            sessionId: stamp.sessionId
+        )
+
+        // Try to send immediately
+        do {
+            try await sendEvent(event)
+            HumanlabsLinkLogger.log("Event tracked: \(name)")
+
+            // If send succeeds, try to flush queue
+            await flushQueue()
+        } catch {
+            // If send fails, queue the event
+            eventQueue.enqueue(event)
+            HumanlabsLinkLogger.log("Event queued due to error: \(error)")
+            throw error
+        }
+    }
+
+    /// Tracks a revenue event
+    /// - Parameters:
+    ///   - amount: Revenue amount
+    ///   - currency: Currency code (e.g., "USD")
+    ///   - properties: Optional additional properties
+    /// - Throws: HumanlabsLinkError if tracking fails
+    func trackRevenue(
+        amount: Decimal,
+        currency: String,
+        properties: [String: Any]? = nil
+    ) async throws {
+        guard amount >= 0 else {
+            throw HumanlabsLinkError.invalidEventData("Revenue amount must be non-negative")
+        }
+
+        var eventProperties = properties ?? [:]
+        eventProperties["revenue"] = NSDecimalNumber(decimal: amount).doubleValue
+        eventProperties["currency"] = currency
+
+        try await trackEvent(name: "revenue", properties: eventProperties)
+    }
+
+    /// Tracks a screen view.
+    ///
+    /// Emits a `screen_view` event (through the normal event pipeline, so it is
+    /// stamped with the active last-click attribution context) carrying the screen
+    /// name and — when available — the previously tracked screen, so the dashboard
+    /// can build a per-link screen-flow funnel.
+    ///
+    /// - Parameters:
+    ///   - name: Screen name (e.g., "ProductDetail")
+    ///   - properties: Optional additional properties
+    /// - Throws: HumanlabsLinkError if tracking fails
+    func trackScreenView(name: String, properties: [String: Any]? = nil) async throws {
+        guard !name.isEmpty else {
+            throw HumanlabsLinkError.invalidEventData("Screen name cannot be empty")
+        }
+
+        let previous = swapLastScreen(to: name)
+
+        var eventProperties = properties ?? [:]
+        eventProperties["screen"] = name
+        if let previous = previous, previous != name {
+            eventProperties["previousScreen"] = previous
+        }
+
+        try await trackEvent(name: "screen_view", properties: eventProperties)
+    }
+
+    /// Atomically records the current screen and returns the previous one.
+    /// Kept synchronous so the lock never spans an `await`.
+    private func swapLastScreen(to name: String) -> String? {
+        screenLock.lock()
+        defer { screenLock.unlock() }
+        let previous = lastScreenName
+        lastScreenName = name
+        return previous
+    }
+
+    // MARK: - Queue Management
+
+    /// Flushes the event queue, attempting to send all queued events
+    func flushQueue() async {
+        await processingQueue.sync { [weak self] in
+            guard let self = self else { return }
+
+            HumanlabsLinkLogger.log("Flushing event queue (\(self.eventQueue.count) events)")
+
+            while !self.eventQueue.isEmpty {
+                guard let event = self.eventQueue.dequeue() else { break }
+
+                Task {
+                    do {
+                        try await self.sendEvent(event)
+                        HumanlabsLinkLogger.log("Queued event sent: \(event.eventName)")
+                    } catch {
+                        // Re-queue if send fails
+                        self.eventQueue.enqueue(event)
+                        HumanlabsLinkLogger.log("Failed to send queued event: \(error)")
+                        return
+                    }
+                }
+            }
+        }
+    }
+
+    /// Returns the number of queued events
+    var queuedEventCount: Int {
+        eventQueue.count
+    }
+
+    /// Clears the event queue
+    func clearQueue() {
+        eventQueue.clear()
+    }
+
+    // MARK: - Private Helpers
+
+    /// Sends an event to the backend
+    /// - Parameter event: Event to send
+    /// - Throws: HumanlabsLinkError on failure
+    private func sendEvent(_ event: EventRequest) async throws {
+        let _: EventResponse = try await networkManager.request(
+            endpoint: "/api/sdk/v1/event",
+            method: .post,
+            body: event,
+            headers: nil
+        )
+    }
+}
