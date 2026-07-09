@@ -1,0 +1,124 @@
+//
+//  MockHelpers.swift
+//  HumanlabsLinkSDKTests
+//
+//  Copyright (c) 2025 HumanlabsLink
+//  Licensed under the MIT License
+//
+
+import Foundation
+@testable import HumanlabsLinkSDK
+
+// MARK: - Mock Network Manager
+
+@available(iOS 13.0, macOS 10.15, *)
+class MockNetworkManager: NetworkManagerProtocol {
+    var mockResponse: Any?
+    var mockError: Error?
+    var lastEndpoint: String?
+    var lastMethod: HTTPMethod?
+    var lastBody: Any?
+
+    func request<T: Decodable>(
+        endpoint: String,
+        method: HTTPMethod,
+        body: Encodable?,
+        headers: [String: String]? = nil
+    ) async throws -> T {
+        lastEndpoint = endpoint
+        lastMethod = method
+        lastBody = body
+
+        if let error = mockError {
+            throw error
+        }
+
+        guard let mockResponse = mockResponse else {
+            throw HumanlabsLinkError.invalidResponse(statusCode: nil, message: "No mock response")
+        }
+
+        // Try direct cast first
+        if let response = mockResponse as? T {
+            return response
+        }
+
+        throw HumanlabsLinkError.invalidResponse(statusCode: nil, message: "Mock response type mismatch")
+    }
+}
+
+// MARK: - Mock Storage Manager
+
+class MockStorageManager: StorageManagerProtocol {
+    var savedInstallId: String?
+    var savedInstallData: DeepLinkData?
+    var hasLaunchedCalled = false
+    var clearAllCalled = false
+
+    var mockInstallId: String?
+    var mockInstallData: DeepLinkData?
+    var mockIsFirstLaunch = true
+
+    func saveInstallId(_ installId: String) {
+        savedInstallId = installId
+    }
+
+    func saveInstallData(_ data: DeepLinkData) {
+        savedInstallData = data
+    }
+
+    func setHasLaunched() {
+        hasLaunchedCalled = true
+    }
+
+    func getInstallId() -> String? {
+        mockInstallId
+    }
+
+    func getInstallData() -> DeepLinkData? {
+        mockInstallData
+    }
+
+    func isFirstLaunch() -> Bool {
+        mockIsFirstLaunch
+    }
+
+    func clearAll() {
+        clearAllCalled = true
+    }
+}
+
+// MARK: - Mock Fingerprint Collector
+
+class MockFingerprintCollector: FingerprintCollectorProtocol {
+    var collectCalled = false
+    var lastAttributionWindow: Int?
+    var lastDeviceId: String?
+    var lastAppToken: String?
+
+    func collectFingerprint(
+        attributionWindowHours: Int,
+        deviceId: String? = nil,
+        appToken: String? = nil
+    ) -> DeviceFingerprint {
+        collectCalled = true
+        lastAttributionWindow = attributionWindowHours
+        lastDeviceId = deviceId
+        lastAppToken = appToken
+
+        return DeviceFingerprint(
+            userAgent: "TestApp/1.0 iOS/15.0",
+            timezone: "America/New_York",
+            language: "en-US",
+            screenWidth: 1170,
+            screenHeight: 2532,
+            platform: "iOS",
+            platformVersion: "15.0",
+            appVersion: "1.0.0",
+            deviceId: deviceId,
+            attributionWindowHours: attributionWindowHours,
+            appToken: appToken,
+            sdkName: SDKInfo.name,
+            sdkVersion: SDKInfo.version
+        )
+    }
+}
