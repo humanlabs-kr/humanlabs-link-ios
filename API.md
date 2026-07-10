@@ -1,0 +1,745 @@
+# HumanlabsLink iOS SDK - API Reference
+
+Complete API reference for the HumanlabsLink iOS SDK.
+
+## Table of Contents
+
+- [HumanlabsLink](#humanlabs-link) - Main SDK class
+- [HumanlabsLinkConfig](#humanlabs-linkconfig) - Configuration
+- [DeepLinkData](#deeplinkdata) - Deep link data model
+- [CreateLinkOptions](#createlinkoptions) - Link creation options
+- [CreateLinkResult](#createlinkresult) - Link creation result
+- [InstallResponse](#installresponse) - Attribution response
+- [HumanlabsLinkError](#humanlabs-linkerror) - Error types
+- [Type Aliases](#type-aliases) - Callback types
+- [SwiftUI](#swiftui) - View modifiers
+
+---
+
+## HumanlabsLink
+
+Main singleton class providing the SDK interface.
+
+### Singleton Access
+
+```swift
+HumanlabsLink.shared
+```
+
+### Methods
+
+#### initialize(config:attributionWindowHours:deviceId:)
+
+Initializes the SDK with configuration and reports the install.
+
+```swift
+func initialize(
+    config: HumanlabsLinkConfig,
+    attributionWindowHours: Int = 168,
+    deviceId: String? = nil
+) async throws -> InstallResponse
+```
+
+**Parameters:**
+- `config`: SDK configuration (required)
+- `attributionWindowHours`: Attribution window in hours (default: 168 = 7 days)
+- `deviceId`: Optional device identifier for attribution
+
+**Returns:** `InstallResponse` with attribution data
+
+**Throws:** `HumanlabsLinkError` if initialization fails
+
+**Example:**
+```swift
+let config = HumanlabsLinkConfig(
+    baseURL: URL(string: "https://go.yourdomain.com")!,
+    apiKey: "your-api-key",
+    appToken: "at_a1b2c3d4..."   // recommended for Cloud — enables organic-install attribution
+)
+let response = try await HumanlabsLink.shared.initialize(config: config)
+print("Install ID: \(response.installId)")
+print("Attributed: \(response.attributed)")
+```
+
+---
+
+#### handleDeepLink(url:)
+
+Handles a deep link URL (Universal Link or custom scheme).
+
+```swift
+func handleDeepLink(url: URL)
+```
+
+**Parameters:**
+- `url`: The deep link URL to handle
+
+**Example:**
+```swift
+// In SwiftUI
+.onOpenURL { url in
+    HumanlabsLink.shared.handleDeepLink(url: url)
+}
+
+// In AppDelegate
+func application(_ application: UIApplication,
+                continue userActivity: NSUserActivity,
+                restorationHandler: @escaping ([UIUserActivityRestoring]?) -> Void) -> Bool {
+    if let url = userActivity.webpageURL {
+        HumanlabsLink.shared.handleDeepLink(url: url)
+    }
+    return true
+}
+```
+
+---
+
+#### onDeferredDeepLink(_:)
+
+Registers a callback for deferred deep links (install attribution).
+
+```swift
+func onDeferredDeepLink(_ callback: @escaping DeferredDeepLinkCallback)
+```
+
+**Parameters:**
+- `callback`: Closure invoked with deep link data (or nil for organic installs)
+
+**Callback Type:**
+```swift
+typealias DeferredDeepLinkCallback = (DeepLinkData?) -> Void
+```
+
+**Example:**
+```swift
+HumanlabsLink.shared.onDeferredDeepLink { deepLinkData in
+    if let data = deepLinkData {
+        print("Attributed install: \(data.shortCode)")
+        // Navigate to content
+    } else {
+        print("Organic install")
+    }
+}
+```
+
+---
+
+#### onDeepLink(_:)
+
+Registers a callback for direct deep links (when app opens from a link).
+
+```swift
+func onDeepLink(_ callback: @escaping DeepLinkCallback)
+```
+
+**Parameters:**
+- `callback`: Closure invoked with URL and parsed deep link data
+
+**Callback Type:**
+```swift
+typealias DeepLinkCallback = (URL, DeepLinkData?) -> Void
+```
+
+**Example:**
+```swift
+HumanlabsLink.shared.onDeepLink { url, deepLinkData in
+    print("Opened from: \(url)")
+    if let data = deepLinkData {
+        // Navigate based on deep link data
+    }
+}
+```
+
+---
+
+#### createLink(options:)
+
+Creates a short link programmatically.
+
+```swift
+func createLink(options: CreateLinkOptions) async throws -> CreateLinkResult
+```
+
+**Parameters:**
+- `options`: Link creation options (see [CreateLinkOptions](#createlinkoptions))
+
+**Returns:** `CreateLinkResult` with the shareable URL, short code, and link ID
+
+**Throws:**
+- `HumanlabsLinkError.notInitialized` if SDK not initialized
+- `HumanlabsLinkError.missingApiKey` if no API key configured
+
+**Note:** Requires an API key in `HumanlabsLinkConfig`. If `templateId` is provided, uses the dashboard endpoint (`POST /api/links`). Otherwise, uses the simplified SDK endpoint (`POST /api/sdk/v1/links`) which auto-selects the organization's most recent template.
+
+**Example:**
+```swift
+let result = try await HumanlabsLink.shared.createLink(
+    options: CreateLinkOptions(
+        deepLinkParameters: ["route": "VIDEO_VIEWER", "id": "vid123"],
+        title: "Check this out!",
+        utmParameters: UTMParameters(source: "app", campaign: "share")
+    )
+)
+
+print("Share this link: \(result.url)")
+print("Short code: \(result.shortCode)")
+print("Link ID: \(result.linkId)")
+```
+
+---
+
+#### trackEvent(name:properties:)
+
+Tracks a custom event.
+
+```swift
+func trackEvent(
+    name: String,
+    properties: [String: Any]? = nil
+) async throws
+```
+
+**Parameters:**
+- `name`: Event name (e.g., "purchase", "signup")
+- `properties`: Optional event properties (must be JSON-serializable)
+
+**Throws:** `HumanlabsLinkError` if tracking fails
+
+**Example:**
+```swift
+// Simple event
+try await HumanlabsLink.shared.trackEvent(name: "button_clicked")
+
+// Event with properties
+try await HumanlabsLink.shared.trackEvent(
+    name: "purchase",
+    properties: [
+        "product_id": "123",
+        "amount": 29.99,
+        "category": "electronics"
+    ]
+)
+```
+
+---
+
+#### trackRevenue(amount:currency:properties:)
+
+Tracks a revenue event.
+
+```swift
+func trackRevenue(
+    amount: Decimal,
+    currency: String,
+    properties: [String: Any]? = nil
+) async throws
+```
+
+**Parameters:**
+- `amount`: Revenue amount (must be non-negative)
+- `currency`: Currency code (e.g., "USD", "EUR")
+- `properties`: Optional additional properties
+
+**Throws:** `HumanlabsLinkError` if tracking fails
+
+**Example:**
+```swift
+try await HumanlabsLink.shared.trackRevenue(
+    amount: 29.99,
+    currency: "USD",
+    properties: [
+        "product_id": "123",
+        "payment_method": "credit_card"
+    ]
+)
+```
+
+---
+
+#### trackScreenView(name:properties:)
+
+Reports a screen view. Emits a `screen_view` event carrying the screen name and the previously tracked screen, stamped with the active last-click attribution context, so the dashboard can build a per-link screen-flow funnel.
+
+```swift
+func trackScreenView(
+    name: String,
+    properties: [String: Any]? = nil
+) async throws
+```
+
+**Parameters:**
+- `name`: Screen name (e.g., "ProductDetail"). Must not be empty.
+- `properties`: Optional additional properties
+
+**Throws:** `HumanlabsLinkError` if tracking fails (including an empty screen name)
+
+**Example:**
+```swift
+// UIKit — from viewDidAppear
+override func viewDidAppear(_ animated: Bool) {
+    super.viewDidAppear(animated)
+    Task { try? await HumanlabsLink.shared.trackScreenView(name: "ProductDetail") }
+}
+```
+
+For SwiftUI, prefer the [`.humanlabs-linkScreen(_:)`](#viewhumanlabs-linkscreen_properties) view modifier.
+
+---
+
+#### flushEvents()
+
+Flushes the event queue, attempting to send all queued events.
+
+```swift
+func flushEvents() async
+```
+
+**Example:**
+```swift
+await HumanlabsLink.shared.flushEvents()
+```
+
+---
+
+#### clearEventQueue()
+
+Clears the event queue without sending events.
+
+```swift
+func clearEventQueue()
+```
+
+**Example:**
+```swift
+HumanlabsLink.shared.clearEventQueue()
+```
+
+---
+
+### Properties
+
+#### queuedEventCount
+
+Returns the number of events currently queued.
+
+```swift
+var queuedEventCount: Int { get }
+```
+
+**Example:**
+```swift
+let count = HumanlabsLink.shared.queuedEventCount
+print("Queued events: \(count)")
+```
+
+---
+
+### Attribution Data Methods
+
+#### getInstallId()
+
+Returns the install ID if available.
+
+```swift
+func getInstallId() -> String?
+```
+
+**Returns:** Install ID or nil if not initialized
+
+**Example:**
+```swift
+if let installId = HumanlabsLink.shared.getInstallId() {
+    print("Install ID: \(installId)")
+}
+```
+
+---
+
+#### getInstallData()
+
+Returns the install attribution data if available.
+
+```swift
+func getInstallData() -> DeepLinkData?
+```
+
+**Returns:** Deep link data or nil if organic install
+
+**Example:**
+```swift
+if let data = HumanlabsLink.shared.getInstallData() {
+    print("Short code: \(data.shortCode)")
+    print("UTM source: \(data.utmParameters?.source ?? "none")")
+}
+```
+
+---
+
+#### isFirstLaunch()
+
+Returns whether this is the first launch.
+
+```swift
+func isFirstLaunch() -> Bool
+```
+
+**Returns:** true if first launch, false otherwise
+
+**Example:**
+```swift
+if HumanlabsLink.shared.isFirstLaunch() {
+    print("First launch - show onboarding")
+}
+```
+
+---
+
+### Data Management Methods
+
+#### clearData()
+
+Clears all stored SDK data.
+
+```swift
+func clearData()
+```
+
+**Example:**
+```swift
+HumanlabsLink.shared.clearData()
+```
+
+---
+
+#### reset()
+
+Resets the SDK to uninitialized state.
+
+**Note:** This does NOT clear stored data. Call `clearData()` first if needed.
+
+```swift
+func reset()
+```
+
+**Example:**
+```swift
+HumanlabsLink.shared.clearData()
+HumanlabsLink.shared.reset()
+```
+
+---
+
+## HumanlabsLinkConfig
+
+Configuration for the HumanlabsLink SDK.
+
+### Initializer
+
+```swift
+init(
+    baseURL: URL,
+    apiKey: String? = nil,
+    appToken: String? = nil,
+    debug: Bool = false,
+    attributionWindowHours: Int = 168
+)
+```
+
+**Parameters:**
+- `baseURL`: Backend URL (must be HTTPS except localhost)
+- `apiKey`: API key (optional for self-hosted)
+- `appToken`: Public workspace token (HumanlabsLink Cloud only). Recommended — required for organic installs (App Store discovery, social mentions, etc.) to be attributed to your workspace. Find it in the dashboard under Workspace Settings → App Token. Format: `at_<32 hex chars>`. Safe to ship in your app bundle.
+- `debug`: Enable debug logging (default: false)
+- `attributionWindowHours`: Attribution window in hours (default: 168 = 7 days, max: 2160 = 90 days)
+
+**Example:**
+```swift
+let config = HumanlabsLinkConfig(
+    baseURL: URL(string: "https://go.yourdomain.com")!,
+    apiKey: "your-api-key",
+    appToken: "at_a1b2c3d4...",
+    debug: true,
+    attributionWindowHours: 24
+)
+```
+
+### Properties
+
+- `baseURL: URL` - Backend URL
+- `apiKey: String?` - API key (optional)
+- `appToken: String?` - Public workspace token (optional, recommended for Cloud)
+- `debug: Bool` - Debug mode flag
+- `attributionWindowHours: Int` - Attribution window
+
+### Methods
+
+#### validate()
+
+Validates the configuration.
+
+```swift
+func validate() throws
+```
+
+**Throws:** `HumanlabsLinkError.invalidConfiguration` if validation fails
+
+---
+
+## DeepLinkData
+
+Deep link data model containing parsed link information.
+
+### Properties
+
+```swift
+public let shortCode: String            // HumanlabsLink short code (required)
+public let iosURL: String?             // iOS deep link URL
+public let androidURL: String?         // Android deep link URL
+public let webURL: String?             // Fallback web URL
+public let utmParameters: UTMParameters?  // UTM tracking parameters
+public let customParameters: [String: String]?  // Custom query parameters
+public let deepLinkPath: String?       // Deep link path for in-app routing (e.g., "/product/123")
+public let appScheme: String?          // App URI scheme (e.g., "myapp")
+public let clickedAt: Date?            // When the link was clicked (ISO 8601)
+public let linkId: String?             // Link UUID from the backend
+```
+
+### Example
+
+```swift
+if let data = deepLinkData {
+    print("Short code: \(data.shortCode)")
+
+    // Use deep link path for in-app routing
+    if let path = data.deepLinkPath {
+        navigateToPath(path)
+    }
+
+    if let utm = data.utmParameters {
+        print("Source: \(utm.source ?? "unknown")")
+        print("Campaign: \(utm.campaign ?? "unknown")")
+    }
+
+    if let productId = data.customParameters?["product_id"] {
+        navigateToProduct(id: productId)
+    }
+}
+```
+
+---
+
+## InstallResponse
+
+Response from install attribution API.
+
+### Properties
+
+```swift
+public let installId: String           // Unique install ID
+public let attributed: Bool            // Whether install was attributed
+public let confidenceScore: Double     // Confidence score (0-100)
+public let matchedFactors: [String]    // Matched fingerprint factors
+public let deepLinkData: DeepLinkData? // Deep link data if attributed
+```
+
+### Example
+
+```swift
+let response = try await HumanlabsLink.shared.initialize(config: config)
+
+print("Install ID: \(response.installId)")
+print("Attributed: \(response.attributed)")
+
+if response.attributed {
+    print("Confidence: \(response.confidenceScore)%")
+    print("Matched factors: \(response.matchedFactors)")
+
+    if let data = response.deepLinkData {
+        print("Short code: \(data.shortCode)")
+    }
+}
+```
+
+---
+
+## CreateLinkOptions
+
+Options for creating a short link programmatically.
+
+### Initializer
+
+```swift
+init(
+    templateId: String? = nil,
+    templateSlug: String? = nil,
+    deepLinkParameters: [String: String]? = nil,
+    title: String? = nil,
+    description: String? = nil,
+    customCode: String? = nil,
+    utmParameters: UTMParameters? = nil
+)
+```
+
+**Parameters:**
+- `templateId`: Template UUID (auto-selected if omitted)
+- `templateSlug`: Template slug (only needed with `templateId`)
+- `deepLinkParameters`: Deep link parameters for in-app routing (e.g., `["route": "VIDEO_VIEWER", "id": "..."]`)
+- `title`: Link title
+- `description`: Link description
+- `customCode`: Custom short code (auto-generated if omitted)
+- `utmParameters`: UTM parameters for campaign tracking
+
+---
+
+## CreateLinkResult
+
+Result of creating a short link.
+
+### Properties
+
+```swift
+public let url: String       // Full shareable URL (e.g., "https://go.yourdomain.com/tmpl/abc123")
+public let shortCode: String // The generated short code
+public let linkId: String    // Link UUID
+```
+
+---
+
+## HumanlabsLinkError
+
+Error types thrown by the SDK.
+
+### Cases
+
+```swift
+case notInitialized
+    // SDK not initialized - call initialize() first
+
+case alreadyInitialized
+    // SDK already initialized
+
+case invalidConfiguration(String)
+    // Invalid configuration
+
+case networkError(Error)
+    // Network request failed
+
+case invalidResponse(statusCode: Int?, message: String?)
+    // Invalid or unexpected server response
+
+case decodingError(Error)
+    // Failed to decode response
+
+case encodingError(Error)
+    // Failed to encode request
+
+case invalidEventData(String)
+    // Invalid event data
+
+case invalidDeepLinkURL(String)
+    // Invalid deep link URL
+
+case missingApiKey
+    // API key is required for this operation (e.g., createLink)
+```
+
+### Example
+
+```swift
+do {
+    try await HumanlabsLink.shared.trackEvent(name: "test")
+} catch let error as HumanlabsLinkError {
+    switch error {
+    case .notInitialized:
+        print("SDK not initialized")
+    case .networkError(let underlyingError):
+        print("Network error: \(underlyingError)")
+    case .invalidEventData(let message):
+        print("Invalid event: \(message)")
+    default:
+        print("Error: \(error)")
+    }
+}
+```
+
+---
+
+## Type Aliases
+
+### DeferredDeepLinkCallback
+
+Callback for deferred deep links (install attribution).
+
+```swift
+typealias DeferredDeepLinkCallback = (DeepLinkData?) -> Void
+```
+
+**Parameter:** Deep link data if attributed, nil for organic installs
+
+---
+
+### DeepLinkCallback
+
+Callback for direct deep links (when app opens from a link).
+
+```swift
+typealias DeepLinkCallback = (URL, DeepLinkData?) -> Void
+```
+
+**Parameters:**
+- `URL`: The URL that opened the app
+- `DeepLinkData?`: Parsed deep link data, nil if parsing failed
+
+---
+
+## SwiftUI
+
+### View.humanlabs-linkScreen(_:properties:)
+
+A `View` modifier that reports a `screen_view` event when the view appears. Equivalent to calling [`trackScreenView(name:properties:)`](#trackscreenviewnameproperties) from `onAppear`, including the active last-click attribution stamp.
+
+```swift
+func humanlabs-linkScreen(
+    _ name: String,
+    properties: [String: Any]? = nil
+) -> some View
+```
+
+**Parameters:**
+- `name`: Screen name (e.g., "ProductDetail")
+- `properties`: Optional additional properties
+
+**Example:**
+```swift
+struct ProductView: View {
+    var body: some View {
+        VStack { /* ... */ }
+            .humanlabs-linkScreen("ProductDetail")
+    }
+}
+```
+
+---
+
+## Thread Safety
+
+All SDK methods are thread-safe and can be called from any thread. Callbacks are executed on the main thread.
+
+## Async/Await Support
+
+The SDK uses modern Swift concurrency (async/await) for asynchronous operations:
+
+```swift
+// All async methods can be called with await
+try await HumanlabsLink.shared.initialize(config: config)
+try await HumanlabsLink.shared.trackEvent(name: "test")
+await HumanlabsLink.shared.flushEvents()
+```
+
+## Offline Support
+
+Events are automatically queued when offline and sent when connectivity is restored. The queue has a maximum size of 100 events.
+
+---
+
+For more information, see the [full documentation](README.md) or [HumanlabsLink Docs](https://docs.humanlabs.world).
